@@ -20,10 +20,11 @@ jax.config.update("jax_enable_x64", True)
 print("local_device_count():", jax.local_device_count())
 numpyro.set_host_device_count(16)
 
+path = '/Users/hanyuan/Desktop/PhD_projects/'
 
-Vc0 = 240
+Vc0 = 240.
 
-df_mockdata = pd.read_csv('/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/mock_data_errorfree_L@10.csv')
+df_mockdata = pd.read_csv(path+'radial_migration_kernel/mock_sample/L_conditioned/mock_data_errorfree_L@10.csv')
 F, logage, L = df_mockdata['MH'], df_mockdata['log_age'], df_mockdata['Lz']
 sigma_F, sigma_logage, sigma_L = df_mockdata['sigma_MH'], df_mockdata['sigma_logage'], df_mockdata['sigma_Lz']
 
@@ -124,7 +125,7 @@ jit_model_args = True
 
 if init_from_minimiser:
 
-    file_name = f'/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots_L@10.npy'
+    file_name = path+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots_L@10.npy'
     minimiser_results = np.load(file_name)
     init_guess = {
         'ln_Rdisk': jnp.array(minimiser_results[:Nknots]),
@@ -151,8 +152,8 @@ model.run_mcmc(num_warmup=n_warmup, num_samples=n_samples, num_chains=num_chains
 print('MCMC finished, collecting samples...')
 samples = model.samples()
 print(samples)
-# file = f'/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/Prior_distribution_{Nknots}knots.pkl'
-file = f'/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/results_errorfree_{Nknots}knots_L@10.pkl'
+# file = path+f'radial_migration_kernel/mock_sample/L_conditioned/Prior_distribution_{Nknots}knots.pkl'
+file = path+f'radial_migration_kernel/mock_sample/L_conditioned/results_errorfree_{Nknots}knots_L@10.pkl'
 with open(file,'wb') as f:
     pickle.dump(samples, f)
 
