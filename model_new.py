@@ -3,20 +3,14 @@ import jax.scipy as jsp
 import jax
 jax.config.update("jax_enable_x64", True)
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
-import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 np.random.seed(42)
 import scipy as sp
 import matplotlib as mpl
-import cmasher as cmr
-from astropy.io import fits
-from astropy.table import Table
 
 from tqdm import tqdm
 import time
-import agama
-agama.setUnits(mass=1, length=1, velocity=1)
 
 Vc0=240.
 
