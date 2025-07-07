@@ -133,8 +133,11 @@ def Rd_evolution_linear(age, tmax = 11.5, Rd_min = 1, gradient = 2.5):
     return Rd_min+(tbirth/tmax)*gradient
 
 
-df = pd.read_csv(f"/data/hz420-2/bar_deceleration/Birth_radii_calculation.csv")
-_age, MH_grad, MH_center = df.to_numpy().T
+# df = pd.read_csv(f"/data/hz420-2/bar_deceleration/Birth_radii_calculation.csv")
+# _age, MH_grad, MH_center = df.to_numpy().T
+_age = np.array([0.0, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5, 13.0])
+MH_grad = np.array([-0.07,-0.075,-0.084,-0.092,-0.104,-0.124,-0.135,-0.143,-0.152,-0.15,-0.14,-0.132,-0.131,-0.133,-0.13])
+MH_center = np.array([0.624,0.618,0.604,0.588,0.57,0.549,0.524,0.493,0.451,0.396,0.283,0.018,-0.147,-0.297,-0.315])
 MH_grad_interp = jsp.interpolate.RegularGridInterpolator((_age,), MH_grad, fill_value = None, bounds_error=False)
 MH_center_interp = jsp.interpolate.RegularGridInterpolator((_age,), MH_center, fill_value = None, bounds_error=False)
 
