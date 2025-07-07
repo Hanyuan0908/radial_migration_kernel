@@ -86,7 +86,7 @@ F_centre_for_sampling, F_scale_for_sampling = -0.5,  -0.5
 data_generated = generate_sample_for_MC_integration(data_grid, R_scale_for_sampling = R_scale_for_sampling, 
                                                     F_centre_for_sampling = F_centre_for_sampling, 
                                                     F_scale_for_sampling = F_scale_for_sampling, 
-                                                    N_sample = int(1e3)) 
+                                                    N_sample = int(2e3)) 
 
 data_generated['weights'] = jnp.array(Nstars)
 

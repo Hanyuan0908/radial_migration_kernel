@@ -9,11 +9,12 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import jax.scipy as jsp
-import pickle
+
+path = '/Users/hanyuan/Desktop/PhD_projects/'
 
 Vc0 = 240
 
-df_mockdata = pd.read_csv('/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/mock_data_errorfree_L@10.csv')
+df_mockdata = pd.read_csv(path+'radial_migration_kernel/mock_sample/L_conditioned/mock_data_errorfree_L@10.csv')
 F, logage, L = df_mockdata['MH'], df_mockdata['log_age'], df_mockdata['Lz']
 sigma_F, sigma_logage, sigma_L = df_mockdata['sigma_MH'], df_mockdata['sigma_logage'], df_mockdata['sigma_Lz']
 
@@ -67,13 +68,13 @@ data_grid = {
     'sigma_Lz': jnp.array([e_Lz_median] * len(L_centers)),
 }
 
-R_scale_for_sampling = 6
-F_centre_for_sampling, F_scale_for_sampling = -0.3,  1
+R_scale_for_sampling = 4
+F_centre_for_sampling, F_scale_for_sampling = -0.5,  0.5
 
 data_generated = generate_sample_for_MC_integration(data_grid, R_scale_for_sampling = R_scale_for_sampling, 
                                                     F_centre_for_sampling = F_centre_for_sampling, 
                                                     F_scale_for_sampling = F_scale_for_sampling, 
-                                                    N_sample = int(1e3)) 
+                                                    N_sample = int(2e3)) 
 
 data_generated['weights'] = jnp.array(Nstars)
 
