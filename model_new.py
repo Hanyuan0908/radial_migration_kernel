@@ -1,7 +1,8 @@
 import jax.numpy as jnp
 import jax.scipy as jsp
 import jax
-jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", False)
+jax.config.update('jax_platform_name', 'cpu')
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 import matplotlib.pyplot as plt
 import numpy as np
@@ -253,7 +254,7 @@ def smoothing_prior(params):
 
     return lnP
 
-prior_scale_uniform = {'ln_Rdisk':[-2,2.3], 'ln_sigmaLz':[1., 8.],}
+prior_scale_uniform = {'ln_Rdisk':[-2,2.5], 'ln_sigmaLz':[1., 8.3],}
 @jax.jit
 def parameter_prior(params):
     '''
@@ -266,6 +267,21 @@ def parameter_prior(params):
         lnP += jnp.sum(jnp.where((params['ln_sigmaLz']>prior_scale_uniform['ln_sigmaLz'][0]) & (params['ln_sigmaLz']<prior_scale_uniform['ln_sigmaLz'][1]), 0, -jnp.inf))
 
     return lnP
+
+prior_scale_normal = {'ln_Rdisk':[0.5,0.5], 'ln_sigmaLz':[4.5, 0.5],}
+@jax.jit
+def parameter_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+    lnP = 0.
+    if 'ln_Rdisk' in params:
+        lnP += jnp.sum(lnG(params['ln_Rdisk'], prior_scale_normal['ln_Rdisk'][0], prior_scale_normal['ln_Rdisk'][1]))
+    if 'ln_sigmaLz' in params:
+        lnP += jnp.sum(lnG(params['ln_sigmaLz'], prior_scale_normal['ln_sigmaLz'][0], prior_scale_normal['ln_sigmaLz'][1]))
+
+    return lnP
+
 @jax.jit
 def log_prior(params):
     '''
@@ -277,19 +293,80 @@ def log_prior(params):
 
     return lnP
 
+
 # @jax.jit
-# from functools import partial
-# @partial(jax.jit, static_argnums=(2,3,4,5))
+# def logL_numpyro(data, params, aux_knots, 
+#                  F_centre_for_sampling, 
+#                  F_scale_for_sampling, 
+#                  R_scale_for_sampling):
+
+#     time_start = time.perf_counter()
+
+#     L0_scale_for_sampling = R_scale_for_sampling * Vc0  # Scale for L0 sampling, assuming L0 is in units of Vc0
+
+
+#     F_sample_num = data['F_sample_num']
+#     F_sample_denom = data['F_sample_denom']
+#     L0_sample_num = data['L0_sample_num']
+#     L0_sample_denom = data['L0_sample_denom']
+#     age_sample_num = data['age_sample_num']
+#     age_sample_denom = data['age_sample_denom']
+#     L_sample_num = data['L_sample_num']
+#     L_sample_denom = data['L_sample_denom']
+#     weights = data['weights']
+
+#     N_sample = L_sample_denom.shape[0]
+#     N_star = L_sample_denom.shape[1]
+
+#     ln_sigmaLz_knots_knots = params['ln_sigmaLz']
+#     ln_Rdisk_knots_knots = params['ln_Rdisk']
+
+#     sigmaLz_knots = jnp.exp(ln_sigmaLz_knots_knots)
+#     Rdisk_knots = jnp.exp(ln_Rdisk_knots_knots)
+#     Lcentre_knots = Rdisk_knots * Vc0
+
+#     Lcentre_func =  InterpolatedUnivariateSpline(aux_knots, Lcentre_knots, k=3)
+#     sigmaLz_func = InterpolatedUnivariateSpline(aux_knots, sigmaLz_knots, k=3)
+
+#     #### numerator section ####
+#     Lcentre_sample = Lcentre_func(age_sample_num)
+#     sigmaLz_sample = sigmaLz_func(age_sample_num)
+
+#     logP_L_given_age_L0 = kernel_SB15_log(L_sample_num, L0_sample_num, Lcentre_sample, sigmaLz_sample)
+#     logP_F_given_age_L0 = f_MH0_log(F_sample_num, age_sample_num, L0_sample_num)
+#     logP_L0_given_age = fL0_log(L0_sample_num, Lcentre_sample)
+#     logP_L0_sample = XexpX_pdf_log(L0_sample_num, L0_scale_for_sampling)
+
+#     log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_sample
+#     log_num_val = jsp.special.logsumexp(log_num, axis=0) - jnp.log(N_sample)
+
+#     #### denominator section ####
+
+#     Lcentre_sample = Lcentre_func(age_sample_denom)
+#     sigmaLz_sample = sigmaLz_func(age_sample_denom)
+
+#     logP_L_given_age_L0 = kernel_SB15_log(L_sample_denom, L0_sample_denom, Lcentre_sample, sigmaLz_sample)
+#     logP_F_given_age_L0 = f_MH0_log(F_sample_denom, age_sample_denom, L0_sample_denom)
+#     logP_L0_given_age = fL0_log(L0_sample_denom, Lcentre_sample)
+#     logP_L0_sample = XexpX_pdf_log(L0_sample_denom, L0_scale_for_sampling)
+#     logP_F_sample = lnG(F_sample_denom, F_centre_for_sampling, F_scale_for_sampling)
+
+#     log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_sample - logP_F_sample
+#     log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
+
+#     logL = (log_num_val - log_denom_val) * (weights)
+
+#     time_end = time.perf_counter()
+
+#     # jax.debug.print("param = {y}, log_p = {x}, time = {z}", x=jnp.sum(logL), y=params, z = (time_end - time_start))
+
+#     return logL
+
+
 @jax.jit
-def logL_numpyro(data, params, aux_knots, 
-                 F_centre_for_sampling, 
-                 F_scale_for_sampling, 
-                 R_scale_for_sampling):
+def logL_numpyro(data, params, aux_knots):
 
     time_start = time.perf_counter()
-
-    L0_scale_for_sampling = R_scale_for_sampling * Vc0  # Scale for L0 sampling, assuming L0 is in units of Vc0
-
 
     F_sample_num = data['F_sample_num']
     F_sample_denom = data['F_sample_denom']
@@ -299,6 +376,9 @@ def logL_numpyro(data, params, aux_knots,
     age_sample_denom = data['age_sample_denom']
     L_sample_num = data['L_sample_num']
     L_sample_denom = data['L_sample_denom']
+    logP_L0_num = data['logP_L_num']
+    logP_L0_denom = data['logP_L_denom']
+    logP_F_denom = data['logP_F_denom']
     weights = data['weights']
 
     N_sample = L_sample_denom.shape[0]
@@ -307,7 +387,7 @@ def logL_numpyro(data, params, aux_knots,
     ln_sigmaLz_knots_knots = params['ln_sigmaLz']
     ln_Rdisk_knots_knots = params['ln_Rdisk']
 
-    sigmaLz_knots = jnp.exp(ln_sigmaLz_knots_knots)
+    sigmaLz_knots = jnp.exp(ln_sigmaLz_knots_knots) * aux_knots
     Rdisk_knots = jnp.exp(ln_Rdisk_knots_knots)
     Lcentre_knots = Rdisk_knots * Vc0
 
@@ -321,9 +401,8 @@ def logL_numpyro(data, params, aux_knots,
     logP_L_given_age_L0 = kernel_SB15_log(L_sample_num, L0_sample_num, Lcentre_sample, sigmaLz_sample)
     logP_F_given_age_L0 = f_MH0_log(F_sample_num, age_sample_num, L0_sample_num)
     logP_L0_given_age = fL0_log(L0_sample_num, Lcentre_sample)
-    logP_L0_sample = XexpX_pdf_log(L0_sample_num, L0_scale_for_sampling)
 
-    log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_sample
+    log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_num
     log_num_val = jsp.special.logsumexp(log_num, axis=0) - jnp.log(N_sample)
 
     #### denominator section ####
@@ -334,10 +413,8 @@ def logL_numpyro(data, params, aux_knots,
     logP_L_given_age_L0 = kernel_SB15_log(L_sample_denom, L0_sample_denom, Lcentre_sample, sigmaLz_sample)
     logP_F_given_age_L0 = f_MH0_log(F_sample_denom, age_sample_denom, L0_sample_denom)
     logP_L0_given_age = fL0_log(L0_sample_denom, Lcentre_sample)
-    logP_L0_sample = XexpX_pdf_log(L0_sample_denom, L0_scale_for_sampling)
-    logP_F_sample = lnG(F_sample_denom, F_centre_for_sampling, F_scale_for_sampling)
 
-    log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_sample - logP_F_sample
+    log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0_denom - logP_F_denom
     log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
 
     logL = (log_num_val - log_denom_val) * (weights)
@@ -409,6 +486,79 @@ def generate_sample_for_MC_integration(data, R_scale_for_sampling = 6,
         'age_sample_denom': age_sample2,
         'L_sample_num': L_sample1,
         'L_sample_denom': L_sample2,
+        }
+    return sample_generated
+
+def generate_sample_for_MC_integration_withprob(data, R_scale_for_sampling = 4, 
+                                    F_centre_at_0 = 0., F_centre_at_12 = -0.8,
+                                    F_scale_at_0= 0.2, F_scale_at_12= 0.8,
+                                    N_sample = int(1e3)):
+
+    Vc0 = 240.
+    Z = data['MH']
+    log_age = data['log_age']
+    Lz = data['Lz']
+    sigma_Z = data['sigma_MH']
+    sigma_log_age = data['sigma_logage']
+    sigma_Lz = data['sigma_Lz']
+
+    N_star = len(Z)
+
+    jax_random_key1 = jax.random.PRNGKey(42)
+    jax_random_key2 = jax.random.PRNGKey(10086)
+    jax_random_key3 = jax.random.PRNGKey(10010)
+    jax_random_key4 = jax.random.PRNGKey(999)
+    jax_random_key5 = jax.random.PRNGKey(2025)
+    jax_random_key6 = jax.random.PRNGKey(124)
+    jax_random_key7 = jax.random.PRNGKey(456)
+    jax_random_key8 = jax.random.PRNGKey(789)
+
+
+    F_stack = jnp.repeat(Z[None, :], N_sample, axis=0)
+    sigmaF_stack = jnp.repeat(sigma_Z[None, :], N_sample, axis=0)
+    L_stack = jnp.repeat(Lz[None, :], N_sample, axis=0)
+    sigmaL_stack = jnp.repeat(sigma_Lz[None, :], N_sample, axis=0)
+    logage_stack = jnp.repeat(log_age[None, :], N_sample, axis=0)
+    sigmalogage_stack = jnp.repeat(sigma_log_age[None, :], N_sample, axis=0)
+
+    # L0_sample1 = jax.random.exponential(jax_random_key1, shape=(N_sample,N_star)) * (R_scale_for_sampling * Vc0) # * Lcentre
+    # L0_sample2 = jax.random.exponential(jax_random_key8, shape=(N_sample,N_star)) * (R_scale_for_sampling * Vc0) # * Lcentre
+    rng = np.random.default_rng(1234)
+    L0_sample1 = jnp.array(sample_x_exp(rng, R_scale_for_sampling * Vc0, size=(N_sample,N_star)))
+    rng = np.random.default_rng(5678)
+    L0_sample2 = jnp.array(sample_x_exp(rng, R_scale_for_sampling * Vc0, size=(N_sample,N_star)))
+
+    F_sample1 = jax.random.normal(jax_random_key2, shape=(N_sample,N_star)) * sigmaF_stack + F_stack
+    logage_sample1 = jax.random.normal(jax_random_key3, shape=(N_sample,N_star)) * sigmalogage_stack + logage_stack
+    L_sample1 = jax.random.normal(jax_random_key4, shape=(N_sample,N_star)) * sigmaL_stack + L_stack
+    # F_sample2 = jax.random.normal(jax_random_key5, shape=(N_sample,N_star)) * F_scale_for_sampling + F_centre_for_sampling  # Assuming a standard normal distribution for F
+    L_sample2 = jax.random.normal(jax_random_key6, shape=(N_sample,N_star)) * sigmaL_stack + L_stack
+    logage_sample2 = jax.random.normal(jax_random_key7, shape=(N_sample,N_star)) * sigmalogage_stack + logage_stack
+
+    age_sample1 = 10**(logage_sample1)
+    age_sample1 = jnp.where(age_sample1 > 15, 15, age_sample1)
+    age_sample2 = 10**(logage_sample2)
+    age_sample2 = jnp.where(age_sample2 > 15, 15, age_sample2)
+    F_centre_for_sampling = F_centre_at_0 + (F_centre_at_12 - F_centre_at_0)/12 * (age_sample2)
+    F_scale_for_sampling = F_scale_at_0 + (F_scale_at_12 - F_scale_at_0)/12 * (age_sample2)
+    F_sample2 = jax.random.normal(jax_random_key5, shape=(N_sample,N_star)) * F_scale_for_sampling + F_centre_for_sampling  # Assuming a standard normal distribution for F
+
+    logP_L0_num = XexpX_pdf_log(L0_sample1, R_scale_for_sampling * Vc0)
+    logP_L0_denom = XexpX_pdf_log(L0_sample2, R_scale_for_sampling * Vc0)
+    logP_F_denom = lnG(F_sample2, F_centre_for_sampling, F_scale_for_sampling)
+
+    sample_generated = {
+        'L0_sample_num': L0_sample1,
+        'L0_sample_denom': L0_sample2,
+        'F_sample_num': F_sample1,
+        'F_sample_denom': F_sample2,
+        'age_sample_num': age_sample1,
+        'age_sample_denom': age_sample2,
+        'L_sample_num': L_sample1,
+        'L_sample_denom': L_sample2,
+        'logP_L_num': logP_L0_num,
+        'logP_L_denom': logP_L0_denom,
+        'logP_F_denom': logP_F_denom,
         }
     return sample_generated
 

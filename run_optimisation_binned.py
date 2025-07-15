@@ -12,9 +12,11 @@ import pickle
 
 import jax.scipy.optimize as jso
 
+jax.config.update('jax_log_compiles', True)
+
 Vc0 = 240
 
-df_mockdata = pd.read_csv('/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/mock_data_errorfree_L@10.csv')
+df_mockdata = pd.read_csv('/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/mock_data.csv') # _errorfree_L@10
 F, logage, L = df_mockdata['MH'], df_mockdata['log_age'], df_mockdata['Lz']
 sigma_F, sigma_logage, sigma_L = df_mockdata['sigma_MH'], df_mockdata['sigma_logage'], df_mockdata['sigma_Lz']
 
@@ -77,7 +79,7 @@ F_centre_for_sampling, F_scale_for_sampling = -0.5,  0.5
 data_generated = generate_sample_for_MC_integration(data_grid, R_scale_for_sampling = R_scale_for_sampling, 
                                                     F_centre_for_sampling = F_centre_for_sampling, 
                                                     F_scale_for_sampling = F_scale_for_sampling, 
-                                                    N_sample = int(1e4)) 
+                                                    N_sample = int(5e3)) 
 
 data_generated['weights'] = jnp.array(Nstars)
 
@@ -142,5 +144,5 @@ min_results = jso.minimize(minimize_logL_numpyro,
 
 res = min_results.x
 
-file = f'/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots_L@10.npy'
+file = f'/data/hz420-2/radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots.npy'#_L@10
 np.save(file, res)
