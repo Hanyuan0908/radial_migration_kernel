@@ -1,5 +1,10 @@
+import os
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'  # Use CPU for JAX
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Use GPU for JAX
+
 from numpyro_model import *
 from model_new import *
+
 
 import numpy as np
 import scipy as sp
@@ -14,12 +19,13 @@ import time
 Vc0 = 240.  # km/s, circular velocity at the solar radius
 Nknots = 10
 check_mock = True
-path_to_dir = '/data/hz420-2/'  # Path to the data directory
+# path_to_dir = '/data/hz420-2/'  # Path to the data directory
 # path_to_dir = '/Users/hanyuan/Desktop/PhD_projects/'
+path_to_dir = '/home/yuxinyao/Desktop/'
 
 if check_mock:
-    read_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots8.npy'
-    figure_name = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/optimisation_results_{Nknots}knots_4.png'
+    read_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots1.npy'
+    figure_name = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/optimisation_results_withMHmodel_{Nknots}knots1.png'
 else:
     read_file = path_to_dir+f'radial_migration_kernel/results/minimization_result_{Nknots}knots_L@10to11.npy'
     figure_name = path_to_dir+f'radial_migration_kernel/results/optimisation_results_{Nknots}knots_L@10to11.png'
@@ -77,13 +83,23 @@ sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
 sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
 Rd_gt = Rd_evolution_jump(np.linspace(0,15,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
 Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,15,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+MH_at_8_gt = MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0,)
+MH_at_8_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), MH_at_8_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+MH_grad_gt = (MH_evolution_Lu24(np.linspace(0,20,100), 9 * Vc0) - MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0))
+ln_MH_grad_gt = np.log(-MH_grad_gt)
+ln_MH_grad_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), ln_MH_grad_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
 
 # aux_knots = jnp.linspace(0.,15.,Nknots)
 aux_params = {}  # Auxiliary parameters for the model
 aux_params['aux_knots'] = generate_aux_knots(Nknots=Nknots, age_max=12.)#jnp.linspace(0.,15.,Nknots)
 
 ln_Rdisk_knots = jnp.log(Rd_gt_interp(aux_params['aux_knots']))  # Convert Rd to ln(Rdisk)
-ln_sigmaLz_knots = jnp.log(sigmaLz_gt_interp(aux_params['aux_knots']))  # Convert sigma_Lz to ln(sigma_Lz)
+ln_sigmaLz_knots = jnp.log(sigmaLz_gt_interp(aux_params['aux_knots']) / aux_params['aux_knots'])  # Convert sigma_Lz to ln(sigma_Lz)
+ln_sigmaLz_knots = ln_sigmaLz_knots.at[0].set(4.)  # Ensure the first knot is set to the first pivot value
+
+MH_at_8_knots = MH_at_8_gt_interp(aux_params['aux_knots'])
+ln_MH_grad_knots = ln_MH_grad_gt_interp(aux_params['aux_knots'])
+
 # params_trial = {
 #     'ln_Rdisk': ln_Rdisk_knots,
 #     'ln_sigmaLz': ln_sigmaLz_knots,
@@ -105,8 +121,9 @@ file_name = read_file
 minimiser_results = np.load(file_name)
 params_trial = {
     'ln_Rdisk': jnp.array(minimiser_results[:Nknots]),
-    # 'ln_Rdisk': jnp.array(np.flip(np.linspace(-0.2, 1.2, Nknots))),
     'ln_sigmaLz': jnp.array(minimiser_results[Nknots:2*Nknots]),
+    'MH_at_8': jnp.array(minimiser_results[2*Nknots:3*Nknots]),
+    'ln_MH_grad': jnp.array(minimiser_results[3*Nknots:4*Nknots]),
 }
 
 time_start = time.perf_counter()
@@ -114,13 +131,14 @@ logL_numpyro_val = logL_numpyro4(data_test, params_trial, **aux_params)
 time_end = time.perf_counter()
 print(f"time taken for logL_numpyro: {time_end - time_start:.4f} s")
 
-fig, ax = plt.subplots(1, 4, figsize=(20, 4), gridspec_kw={'width_ratios': [1, 1, 1, 2], 'wspace': 0.35})
+fig, ax = plt.subplots(1, 5, figsize=(35, 5), gridspec_kw={'width_ratios': [1, 1, 1, 1, 2], 'wspace': 0.4})
 Rdiskinterp = InterpolatedUnivariateSpline(aux_params['aux_knots'], np.exp(params_trial['ln_Rdisk']), k=3)
 ax[0].plot(np.linspace(0,12,100), Rdiskinterp(np.linspace(0,12,100)), ls = '-', label='Minimiser results', lw = 3)
 ax[0].plot(aux_params['aux_knots'], np.exp(params_trial['ln_Rdisk']), color = 'k', marker='o', ls='None', label='knots')
 ax[0].set_xlabel('Age (Gyr)')
 ax[0].set_xlim(12,0)
 ax[0].set_ylabel('Rdisk (kpc)')
+
 sigmaLzinterp = InterpolatedUnivariateSpline(aux_params['aux_knots'], np.exp(params_trial['ln_sigmaLz']) * aux_params['aux_knots'], k=3)
 ax[1].plot(np.linspace(0,12,100), sigmaLzinterp(np.linspace(0,12,100)), ls = '-', label='Minimiser results', lw = 3)
 ax[1].plot(aux_params['aux_knots'], np.exp(params_trial['ln_sigmaLz']) * aux_params['aux_knots'], color = 'k', marker='o', ls='None', label='knots')
@@ -129,18 +147,33 @@ ax[1].set_xlim(12,0)
 ax[1].set_ylim(0, 1500)
 ax[1].set_ylabel(r'$\sigma_{Lz}$ (kpc km/s)')
 
-for i in range (0, 15):
-    ax[2].plot(np.linspace(0,12,100), MH_evolution_Lu24(np.linspace(0,12,100), i*Vc0), label=f'MH={i/10:.1f}')
-ax[2].set_xlabel('Age (Gyr)')
-ax[2].set_ylabel('Metallicity (Z)')
-ax[2].set_xlim(12,0)
+# for i in range (0, 15):
+#     ax[2].plot(np.linspace(0,12,100), MH_evolution_Lu24(np.linspace(0,12,100), i*Vc0), label=f'MH={i/10:.1f}')
+# ax[2].set_xlabel('Age (Gyr)')
+# ax[2].set_ylabel('Metallicity (Z)')
+# ax[2].set_xlim(12,0)
 
-cb = ax[3].scatter(10**(log_age_grid), Z_grid, c=np.exp(logL_numpyro_val), cmap='jet', 
-                vmin = np.percentile(np.exp(logL_numpyro_val), 5), vmax = np.percentile(np.exp(logL_numpyro_val), 99))
+MHat8interp = InterpolatedUnivariateSpline(aux_params['aux_knots'], params_trial['MH_at_8'], k=1)
+ax[2].plot(np.linspace(0,20,100), MHat8interp(np.linspace(0,20,100)), ls = '-', label='Minimiser results', lw = 3)
+ax[2].plot(aux_params['aux_knots'], params_trial['MH_at_8'], color = 'k', marker='o', ls='None', label='knots')
+ax[2].set_xlabel('Age (Gyr)')
+ax[2].set_xlim(12,0)
+ax[2].set_ylabel('[M/H] (age, R = 8 kpc)')
+
+ln_MH_grad_interp = InterpolatedUnivariateSpline(aux_params['aux_knots'], params_trial['ln_MH_grad'], k=3)
+ax[3].plot(np.linspace(0,20,100), -np.exp(ln_MH_grad_interp(np.linspace(0,20,100))), ls = '-', label='Minimiser results', lw = 3)
+ax[3].plot(aux_params['aux_knots'], -np.exp((params_trial['ln_MH_grad'])), color = 'k', marker='o', ls='None', label='knots')
 ax[3].set_xlabel('Age (Gyr)')
-ax[3].set_ylabel('Metallicity')
 ax[3].set_xlim(12,0)
-fig.colorbar(cb, ax=ax[3], label='exp(Log Likelihood)')
+ax[3].set_ylabel(r'd[M/H]/dR')
+
+
+cb = ax[4].scatter(10**(log_age_grid), Z_grid, c=np.exp(logL_numpyro_val), cmap='jet', 
+                vmin = np.percentile(np.exp(logL_numpyro_val), 5), vmax = np.percentile(np.exp(logL_numpyro_val), 99))
+ax[4].set_xlabel('Age (Gyr)')
+ax[4].set_ylabel('Metallicity')
+ax[4].set_xlim(12,0)
+fig.colorbar(cb, ax=ax[4], label='exp(Log Likelihood)')
 
 logage_unique = jnp.unique(log_age_grid)
 ls = []
@@ -157,46 +190,16 @@ if print_ground_truth:
     ax[0].plot(np.linspace(0,12,100), Rd_gt_interp(np.linspace(0,12,100)), label='Ground truth', color='red', ls='--', lw = 2)
     sigmaLzinterp = InterpolatedUnivariateSpline(aux_params['aux_knots'], np.exp(ln_sigmaLz_knots), k=3)
     ax[1].plot(np.linspace(0,12,100), sigmaLz_gt_interp(np.linspace(0,12,100)), label='Ground truth', color='red', ls='--', lw = 2)
+    MHat8interp = InterpolatedUnivariateSpline(aux_params['aux_knots'], MH_at_8_knots, k=1)
+    ax[2].plot(np.linspace(0,20,100), MH_at_8_gt_interp(np.linspace(0,20,100)), label='Ground truth', color='red', ls='--', lw = 2)
+    MH_grad_interp = InterpolatedUnivariateSpline(aux_params['aux_knots'], -np.exp(ln_MH_grad_knots), k=3)
+    ax[3].plot(np.linspace(0,20,100), MH_grad_gt, label='Ground truth', color='red', ls='--', lw = 2)
 
 ax[0].legend()
 ax[1].legend()
+ax[2].legend()
+ax[3].legend()
 
 figure_name = figure_name
-# fig.savefig(figure_name, dpi=300, bbox_inches='tight')
+fig.savefig(figure_name, dpi=300, bbox_inches='tight')
 plt.show()
-
-
-# #%%
-# logL_numpyro_val = logP_F_given_tau_L(Z_grid, L_grid, 10**log_age_grid, params_trial, aux_knots = aux_params['aux_knots'])
-
-# fig, ax = plt.subplots(1, 4, figsize=(20, 3.5), gridspec_kw={'width_ratios': [1, 1, 1, 2], 'wspace': 0.35})
-# Rdiskinterp = InterpolatedUnivariateSpline(aux_knots, np.exp(ln_Rdisk_knots), k=3)
-# ax[0].plot(np.linspace(0,12,100), Rdiskinterp(np.linspace(0,12,100)), 'o-', label='Rdisk knots')
-# ax[0].set_xlabel('Age (Gyr)')
-# ax[0].set_ylabel('Rdisk (kpc)')
-# sigmaLzinterp = InterpolatedUnivariateSpline(aux_knots, np.exp(ln_sigmaLz_knots), k=3)
-# ax[1].plot(np.linspace(0,12,100), sigmaLzinterp(np.linspace(0,12,100)), 'o-', label='sigmaLz knots')
-# ax[1].set_xlabel('Age (Gyr)')
-# ax[1].set_ylabel('Rdisk (kpc)')
-
-# for i in range (0, 15):
-#     ax[2].plot(np.linspace(0,12,100), MH_evolution_Lu24(np.linspace(0,12,100), i*Vc0), label=f'MH={i/10:.1f}')
-# ax[2].set_xlabel('Age (Gyr)')
-# ax[2].set_ylabel('Metallicity (Z)')
-
-# cb = ax[3].scatter(10**(log_age_grid), Z_grid, c=np.exp(logL_numpyro_val), cmap='jet', 
-#                 vmin = np.percentile(np.exp(logL_numpyro_val), 10), vmax = np.percentile(np.exp(logL_numpyro_val), 95))
-# ax[3].set_xlabel('Age (Gyr)')
-# ax[3].set_ylabel('Metallicity')
-# fig.colorbar(cb, ax=ax[3], label='exp(Log Likelihood)')
-# fig.savefig('/data/hz420-2/radial_migration_kernel/logL_numpyro_test2.png', dpi=300)
-# plt.show()
-
-# logage_unique = jnp.unique(log_age_grid)
-# ls = []
-# for i in range(len(logage_unique)):
-#     mask = log_age_grid == logage_unique[i]
-#     logL_numpyro_val_i = logL_numpyro_val[mask]
-#     ls.append(jsp.special.logsumexp(logL_numpyro_val_i))
-
-# print(ls)

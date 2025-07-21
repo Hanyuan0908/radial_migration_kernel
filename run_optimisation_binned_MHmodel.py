@@ -1,3 +1,7 @@
+import os
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'  # Use CPU for JAX
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Use GPU for JAX
+
 from numpyro_model import *
 from model_new import *
 
@@ -13,13 +17,16 @@ import pickle
 import jax.scipy.optimize as jso
 
 jax.config.update('jax_log_compiles', False)
+np.random.seed(42)
 
 Vc0 = 240
 Nknots = 10
 run_mock = True
 
-path_to_dir = '/data/hz420-2/'
+# path_to_dir = '/data/hz420-2/'
 # path_to_dir = '/Users/hanyuan/Desktop/PhD_projects/'
+path_to_dir = '/home/yuxinyao/Desktop/'
+
 
 if run_mock:
     df_mockdata = pd.read_csv(path_to_dir+'radial_migration_kernel/mock_sample/L_conditioned/mock_data2.csv') # _errorfree_L@10
@@ -28,7 +35,7 @@ if run_mock:
     
     L_range = [9*Vc0,11*Vc0]
 
-    final_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_{Nknots}knots8.npy'#_L@10
+    final_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots1.npy'#_L@10
 else:
     df_realdata = pd.read_csv(path_to_dir+'catalogues/LAMOST/LAMOST_Gaia_subgiants_Xiangetal2024_kinematics.csv')
     F = df_realdata['FEH']
@@ -99,7 +106,7 @@ data_grid = {
     'sigma_Lz': jnp.array([e_Lz_median] * len(L_centers)),
 }
 
-N_sample = int(5e3)
+N_sample = int(1e4)
 # F_centre_for_sampling, F_scale_for_sampling = -0.5,  0.5
 R_scale_for_sampling = 4
 R_scale_at_0, R_scale_at_12 = 4, 1
@@ -125,11 +132,14 @@ def minimize_logL_numpyro(params, aux_params):
 
     Nknots = len(aux_params['aux_knots'])
     params_S = {'ln_Rdisk':params[:Nknots],
-                'ln_sigmaLz':params[Nknots:2*Nknots],}
+                'ln_sigmaLz':params[Nknots:2*Nknots],
+                'MH_at_8':params[2*Nknots:3*Nknots],
+                'ln_MH_grad':params[3*Nknots:4*Nknots],
+                }
 
     time_start = time.perf_counter()
     # prior = -jnp.sum((params.reshape(2, Nknots)-aux_params['prior_mean'][:,np.newaxis])**2/2./aux_params['prior_std'][:,np.newaxis]**2)
-    val = -jnp.sum(logL_numpyro4(data_generated, params_S,
+    val = -jnp.sum(logL_numpyro_withMHmodel(data_generated, params_S,
                                     **aux_params,))
     ln_prior = log_prior(params_S)
     time_end = time.perf_counter()
@@ -149,15 +159,27 @@ sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
 sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
 Rd_gt = Rd_evolution_jump(np.linspace(0,12,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
 Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,12,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+MH_at_8_gt = MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0,)
+MH_at_8_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), MH_at_8_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+MH_grad_gt = (MH_evolution_Lu24(np.linspace(0,20,100), 9 * Vc0) - MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0))
+ln_MH_grad_gt = np.log(-MH_grad_gt)
+ln_MH_grad_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), ln_MH_grad_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+
 ln_Rdisk_knots = jnp.log(Rd_gt_interp(aux_params['aux_knots']))  # Convert Rd to ln(Rdisk)
-ln_sigmaLz_knots = jnp.log(sigmaLz_gt_interp(aux_params['aux_knots']))  # Convert sigma_Lz to ln(sigma_Lz)
+ln_sigmaLz_knots = jnp.log(sigmaLz_gt_interp(aux_params['aux_knots']) / aux_params['aux_knots'])  # Convert sigma_Lz to ln(sigma_Lz)
+ln_sigmaLz_knots = ln_sigmaLz_knots.at[0].set(4.)  # Ensure the first knot is set to the first pivot value
+
+MH_at_8_knots = MH_at_8_gt_interp(aux_params['aux_knots'])
+ln_MH_grad_knots = ln_MH_grad_gt_interp(aux_params['aux_knots'])
 
 params_trial = {
     'ln_Rdisk': ln_Rdisk_knots,
     'ln_sigmaLz': ln_sigmaLz_knots,
+    'MH_at_8': MH_at_8_knots,
+    'ln_MH_grad': ln_MH_grad_knots,
 }
 log_prior1 = log_prior(params_trial)
-logp1 = logL_numpyro4(data_generated, params_trial, **aux_params)
+logp1 = logL_numpyro_withMHmodel(data_generated, params_trial, **aux_params)
 print('GROUND TRUTH', 
       'params', params_trial, 'log_prior:', log_prior1, 'logp:', jnp.sum(logp1))
 
@@ -168,7 +190,9 @@ print('GROUND TRUTH',
 # ]))
 x0 = jnp.array(jnp.concatenate([
     jnp.array(np.random.uniform(-0.5,1.5, Nknots)),  # ln_Rdisk knots
-    jnp.array(np.random.uniform(4,5, Nknots))  # ln_sigmaLz knots
+    jnp.array(np.random.uniform(4,5, Nknots)),  # ln_sigmaLz knots
+    jnp.array(np.linspace(0.1, -1.3, Nknots)),
+    jnp.log(np.random.uniform(0.05, 0.15, Nknots)),
 ]))
 
 print('Optimization begins')
@@ -176,7 +200,7 @@ min_results = jso.minimize(minimize_logL_numpyro,
                            x0, 
                            args=(aux_params,),
                            method='BFGS',
-                           tol = 1e-3,
+                           tol = 1e-4,
                            )#options = {'maxiter':100}
 
 res = min_results.x
