@@ -23,19 +23,19 @@ Vc0 = 240
 Nknots = 10
 run_mock = True
 
-# path_to_dir = '/data/hz420-2/'
+path_to_dir = '/data/hz420-2/'
 # path_to_dir = '/Users/hanyuan/Desktop/PhD_projects/'
-path_to_dir = '/home/yuxinyao/Desktop/'
+# path_to_dir = '/home/yuxinyao/Desktop/'
 
 
 if run_mock:
-    df_mockdata = pd.read_csv(path_to_dir+'radial_migration_kernel/mock_sample/L_conditioned/mock_data2.csv') # _errorfree_L@10
+    df_mockdata = pd.read_csv(path_to_dir+'radial_migration_kernel/mock_sample/L_conditioned/mock_data3.csv') # _errorfree_L@10
     F, logage, L = df_mockdata['MH'], df_mockdata['log_age'], df_mockdata['Lz']
     sigma_F, sigma_logage, sigma_L = df_mockdata['sigma_MH'], df_mockdata['sigma_logage'], df_mockdata['sigma_Lz']
     
     L_range = [9*Vc0,11*Vc0]
 
-    final_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots1.npy'#_L@10
+    final_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots2.npy'#_L@10
 else:
     df_realdata = pd.read_csv(path_to_dir+'catalogues/LAMOST/LAMOST_Gaia_subgiants_Xiangetal2024_kinematics.csv')
     F = df_realdata['FEH']
@@ -54,7 +54,7 @@ else:
 
 
 e_feh_median = np.amax([np.median(sigma_F), 0.02])
-e_log10age_median = np.amax([np.median(sigma_logage), 0.02]) * 2   
+e_log10age_median = np.amax([np.median(sigma_logage), 0.02])
 e_Lz_median = np.amax([np.median(sigma_L), 20])
 print('Median errors: e_feh_median = ', e_feh_median,
       'e_log10age_median = ', e_log10age_median,
@@ -106,11 +106,11 @@ data_grid = {
     'sigma_Lz': jnp.array([e_Lz_median] * len(L_centers)),
 }
 
-N_sample = int(1e4)
+N_sample = int(5e3)
 # F_centre_for_sampling, F_scale_for_sampling = -0.5,  0.5
 R_scale_for_sampling = 4
 R_scale_at_0, R_scale_at_12 = 4, 1
-F_centre_at_0, F_centre_at_12 = -0.1, -0.8
+F_centre_at_0, F_centre_at_12 = -0.1, -0.7
 F_scale_at_0, F_scale_at_12 = 0.1, 0.7
 
 data_generated = generate_sample_for_MC_integration_withprob_samenumdenom(data_grid,
@@ -141,7 +141,14 @@ def minimize_logL_numpyro(params, aux_params):
     # prior = -jnp.sum((params.reshape(2, Nknots)-aux_params['prior_mean'][:,np.newaxis])**2/2./aux_params['prior_std'][:,np.newaxis]**2)
     val = -jnp.sum(logL_numpyro_withMHmodel(data_generated, params_S,
                                     **aux_params,))
-    ln_prior = log_prior(params_S)
+    lnPrior1 = lnRdisk_prior_normal(params_S)
+    lnPrior2 = lnSigmaLz_prior_normal(params_S)
+    lnPrior3 = MH_at_8_prior_uniform(params_S)
+    lnPrior4 = ln_MH_grad_prior_normal(params_S)
+    # lnPrior5 = ln_MH_grad_prior_uniform(params_S)
+    lnPrior_smooth = smoothing_prior_withMHmodel(params_S)
+    ln_prior = lnPrior1 + lnPrior2 + lnPrior3 + lnPrior4 + lnPrior_smooth
+
     time_end = time.perf_counter()
     #print(params_S, val)
     jax.debug.print('params: {params}, logL: {val}, log_prior:{z}, logP = {tot}, time: {t}', 
@@ -150,15 +157,22 @@ def minimize_logL_numpyro(params, aux_params):
 
 
 
-aux_params = {}  # Auxiliary parameters for the model
+aux_params = {'MH_at_8_0': 0.064, 'ln_MH_grad_0': -2.66, 'tol': 5e-2}  # Auxiliary parameters for the model
 aux_params['aux_knots'] = generate_aux_knots(Nknots=Nknots, age_max=12.)
 
 # Compute the ground truth parameters and log likelihood
+# age_pivot = np.array([0, 4, 8, 12, 20])
+# sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
+# sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
+# Rd_gt = Rd_evolution_jump(np.linspace(0,12,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
+# Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,12,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+
 age_pivot = np.array([0, 4, 8, 12, 20])
-sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
+sigmaLz_pivot = np.array([0, 300, 600, 1500, 2000]) # sigma_Lz at 6 Gyr
 sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
-Rd_gt = Rd_evolution_jump(np.linspace(0,12,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
-Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,12,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+Rd_gt = Rd_evolution_jump(np.linspace(0,15,100), Rdmax = 2.72, Rdmin = 1, tau_Rd = 6.0, delta_tau_Rd = 3.0)
+Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,15,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+
 MH_at_8_gt = MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0,)
 MH_at_8_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), MH_at_8_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
 MH_grad_gt = (MH_evolution_Lu24(np.linspace(0,20,100), 9 * Vc0) - MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0))

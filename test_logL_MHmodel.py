@@ -19,13 +19,13 @@ import time
 Vc0 = 240.  # km/s, circular velocity at the solar radius
 Nknots = 10
 check_mock = True
-# path_to_dir = '/data/hz420-2/'  # Path to the data directory
+path_to_dir = '/data/hz420-2/'  # Path to the data directory
 # path_to_dir = '/Users/hanyuan/Desktop/PhD_projects/'
-path_to_dir = '/home/yuxinyao/Desktop/'
+# path_to_dir = '/home/yuxinyao/Desktop/'
 
 if check_mock:
-    read_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots1.npy'
-    figure_name = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/optimisation_results_withMHmodel_{Nknots}knots1.png'
+    read_file = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/minimization_result_withMHmodel_{Nknots}knots2.npy'
+    figure_name = path_to_dir+f'radial_migration_kernel/mock_sample/L_conditioned/optimisation_results_withMHmodel_{Nknots}knots2.png'
 else:
     read_file = path_to_dir+f'radial_migration_kernel/results/minimization_result_{Nknots}knots_L@10to11.npy'
     figure_name = path_to_dir+f'radial_migration_kernel/results/optimisation_results_{Nknots}knots_L@10to11.png'
@@ -78,11 +78,18 @@ data_test = generate_sample_for_MC_integration_withprob_samenumdenom(data_grid,
 data_test['weights'] = jnp.ones(N_star)
 
 
+# age_pivot = np.array([0, 4, 8, 12, 20])
+# sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
+# sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
+# Rd_gt = Rd_evolution_jump(np.linspace(0,15,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
+# Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,15,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+
 age_pivot = np.array([0, 4, 8, 12, 20])
-sigmaLz_pivot = np.array([10, 200, 400, 1200, 2000]) # sigma_Lz at 6 Gyr
+sigmaLz_pivot = np.array([0, 300, 600, 1500, 2000]) # sigma_Lz at 6 Gyr
 sigmaLz_gt_interp = sp.interpolate.interp1d(age_pivot, sigmaLz_pivot, kind='cubic', fill_value='extrapolate', bounds_error=False)
-Rd_gt = Rd_evolution_jump(np.linspace(0,15,100), Rdmax = 3.45, Rdmin = 1, tau_Rd = 7.0, delta_tau_Rd = 1.0)
+Rd_gt = Rd_evolution_jump(np.linspace(0,15,100), Rdmax = 2.72, Rdmin = 1, tau_Rd = 6.0, delta_tau_Rd = 3.0)
 Rd_gt_interp = sp.interpolate.interp1d(np.linspace(0,15,100), Rd_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
+
 MH_at_8_gt = MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0,)
 MH_at_8_gt_interp = sp.interpolate.interp1d(np.linspace(0,20,100), MH_at_8_gt, kind='cubic', fill_value='extrapolate', bounds_error=False)
 MH_grad_gt = (MH_evolution_Lu24(np.linspace(0,20,100), 9 * Vc0) - MH_evolution_Lu24(np.linspace(0,20,100), 8 * Vc0))
@@ -119,11 +126,18 @@ ln_MH_grad_knots = ln_MH_grad_gt_interp(aux_params['aux_knots'])
 print(read_file)
 file_name = read_file
 minimiser_results = np.load(file_name)
+ln_Rdisk_minimiser = jnp.array(minimiser_results[:Nknots])
+ln_sigmaLz_minimiser = jnp.array(minimiser_results[Nknots:2*Nknots])
+MH_at_8_minimiser = jnp.array(minimiser_results[2*Nknots:3*Nknots])
+ln_MH_grad_minimiser = jnp.array(minimiser_results[3*Nknots:4*Nknots])
+MH_at_8_minimiser = MH_at_8_minimiser.at[0].set(0.064)  # Ensure the first knot is set to zero
+ln_MH_grad_minimiser = ln_MH_grad_minimiser.at[0].set(-2.6)  # Ensure the first knot is set to a reasonable value
+ln_MH_grad_minimiser = ln_MH_grad_minimiser.at[-1].set(-2) 
 params_trial = {
-    'ln_Rdisk': jnp.array(minimiser_results[:Nknots]),
-    'ln_sigmaLz': jnp.array(minimiser_results[Nknots:2*Nknots]),
-    'MH_at_8': jnp.array(minimiser_results[2*Nknots:3*Nknots]),
-    'ln_MH_grad': jnp.array(minimiser_results[3*Nknots:4*Nknots]),
+    'ln_Rdisk': jnp.array(ln_Rdisk_minimiser),
+    'ln_sigmaLz': jnp.array(ln_sigmaLz_minimiser),
+    'MH_at_8': jnp.array(MH_at_8_minimiser),
+    'ln_MH_grad': jnp.array(ln_MH_grad_minimiser),
 }
 
 time_start = time.perf_counter()
@@ -165,6 +179,7 @@ ax[3].plot(np.linspace(0,20,100), -np.exp(ln_MH_grad_interp(np.linspace(0,20,100
 ax[3].plot(aux_params['aux_knots'], -np.exp((params_trial['ln_MH_grad'])), color = 'k', marker='o', ls='None', label='knots')
 ax[3].set_xlabel('Age (Gyr)')
 ax[3].set_xlim(12,0)
+ax[3].set_ylim(-0.2,0)
 ax[3].set_ylabel(r'd[M/H]/dR')
 
 
