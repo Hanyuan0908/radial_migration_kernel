@@ -230,7 +230,8 @@ def fL0_log(L,Lcentre):
     L: birth AM
     Lcentre: scale length of the initial AM distribution
     '''
-    return jnp.log(L)+(-L/Lcentre)
+    Lcentre = jnp.where(Lcentre > 5, Lcentre, 5)
+    return jnp.log(L)+(-L/Lcentre) - 2*jnp.log(Lcentre)
 
 def kernel_SB15_log(L, Lp, Lcenter, sigmaLz):
     ''' 
@@ -274,7 +275,7 @@ def f_MH0_linearmodel_log(MH, Lbirth, MH_at_8, MH_grad, tol = 5e-2):
 
 
 
-smoothing_scale = {'ln_Rdisk':0.4, 'ln_sigmaLz':1.2,}
+smoothing_scale = {'ln_Rdisk':0.3, 'ln_sigmaLz':0.5,}
 @jax.jit
 def smoothing_prior(params):
     lnP=0.
@@ -284,7 +285,11 @@ def smoothing_prior(params):
 
     return lnP
 
-prior_scale_uniform = {'ln_Rdisk':[-2,2.5], 'ln_sigmaLz':[3., 6.3],}
+prior_scale_uniform = {'ln_Rdisk':[-2,2.5], 
+                       'ln_sigmaLz':[3., 6.3],
+                       'MH_at_8':[-1.5, 0.2],
+                        'ln_MH_grad':[-3.5, -1.5],
+                       }
 @jax.jit
 def parameter_prior(params):
     '''
@@ -298,7 +303,11 @@ def parameter_prior(params):
 
     return lnP
 
-prior_scale_normal = {'ln_Rdisk':[0.2,0.5], 'ln_sigmaLz':[4.7, 0.5],}
+prior_scale_normal = {'ln_Rdisk':[0.2,0.5], 
+                      'ln_sigmaLz':[4.7, 0.5], 
+                      'MH_at_8':[-0.5, 0.5], 
+                      'ln_MH_grad':[-2.6, 0.5],
+                      }
 @jax.jit
 def parameter_prior_normal(params):
     '''
@@ -321,6 +330,97 @@ def log_prior(params):
     # lnP += parameter_prior(params)
     lnP += parameter_prior_normal(params)
     lnP += smoothing_prior(params)
+
+    return lnP
+
+
+@jax.jit
+def lnRdisk_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(lnG(params['ln_Rdisk'], prior_scale_normal['ln_Rdisk'][0], prior_scale_normal['ln_Rdisk'][1]))
+
+    return lnP
+
+@jax.jit
+def lnRdisk_prior_uniform(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(jnp.where((params['ln_Rdisk']>prior_scale_uniform['ln_Rdisk'][0]) & (params['ln_Rdisk']<prior_scale_uniform['ln_Rdisk'][1]), 0, -jnp.inf))
+
+    return lnP
+
+@jax.jit
+def lnSigmaLz_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(lnG(params['ln_sigmaLz'], prior_scale_normal['ln_sigmaLz'][0], prior_scale_normal['ln_sigmaLz'][1]))
+
+    return lnP
+
+@jax.jit
+def lnSigmaLz_prior_uniform(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(jnp.where((params['ln_sigmaLz']>prior_scale_uniform['ln_sigmaLz'][0]) & (params['ln_sigmaLz']<prior_scale_uniform['ln_sigmaLz'][1]), 0, -jnp.inf))
+
+    return lnP
+
+@jax.jit
+def MH_at_8_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(lnG(params['MH_at_8'], prior_scale_normal['MH_at_8'][0], prior_scale_normal['MH_at_8'][1]))
+
+    return lnP
+
+@jax.jit
+def MH_at_8_prior_uniform(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(jnp.where((params['MH_at_8']>prior_scale_uniform['MH_at_8'][0]) & (params['MH_at_8']<prior_scale_uniform['MH_at_8'][1]), 0, -jnp.inf))
+
+    return lnP
+
+@jax.jit
+def ln_MH_grad_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(lnG(params['ln_MH_grad'], prior_scale_normal['ln_MH_grad'][0], prior_scale_normal['ln_MH_grad'][1]))
+
+    return lnP
+
+@jax.jit
+def ln_MH_grad_prior_uniform(params):
+    '''
+    Prior for the parameters
+    '''
+
+    lnP = jnp.sum(jnp.where((params['ln_MH_grad']>prior_scale_uniform['ln_MH_grad'][0]) & (params['ln_MH_grad']<prior_scale_uniform['ln_MH_grad'][1]), 0, -jnp.inf))
+
+    return lnP
+
+smoothing_scale_wMH = {'ln_Rdisk':0.2, 'ln_sigmaLz':0.5, 'MH_at_8':0.2, 'ln_MH_grad':0.2}
+@jax.jit
+def smoothing_prior_withMHmodel(params):
+    lnP=0.
+    if 'ln_Rdisk' in params:
+        for i in smoothing_scale_wMH.keys():
+            lnP += -jnp.sum(.5*(params[i][1:]-params[i][:-1])**2/(smoothing_scale_wMH[i])**2 + jnp.log(smoothing_scale_wMH[i]))
 
     return lnP
 
@@ -731,7 +831,8 @@ def logL_numpyro4(data, params, aux_knots, tol = 5e-2):
     log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0 - logP_F_denom
     log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
 
-    logL = (log_num_val - log_denom_val) * (weights)
+    # ln_prior_on_Rdisk = jnp.sum(lnG(ln_Rdisk_knots, 0.5, 1.5))
+    logL = (log_num_val - log_denom_val) * (weights)#/np.sum(weights) * 1000 + ln_prior_on_Rdisk * (weights/100) # 3.1 is for the total normalisation of the loglikelihood
 
     time_end = time.perf_counter()
 
@@ -764,8 +865,11 @@ def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_g
     MH_at_8_knots = params['MH_at_8']
     ln_MH_grad_knots = params['ln_MH_grad']
 
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[0].set(4) # today's metallicity at 8 kpc
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[-1].set(4.8)
     MH_at_8_knots = MH_at_8_knots.at[0].set(MH_at_8_0) # today's metallicity at 8 kpc
     ln_MH_grad_knots = ln_MH_grad_knots.at[0].set(ln_MH_grad_0) # today's gradient = -0.07
+    ln_MH_grad_knots = ln_MH_grad_knots.at[-1].set(-2) # today's gradient = -0.07
 
 
     ln_Rdisk_func =  InterpolatedUnivariateSpline(aux_knots, ln_Rdisk_knots, k=3)
@@ -802,7 +906,8 @@ def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_g
     log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0 - logP_F_denom
     log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
 
-    logL = (log_num_val - log_denom_val) * (weights)
+    # ln_prior_on_Rdisk = jnp.sum(lnG(ln_Rdisk_knots, 0.5, 1.5))
+    logL = (log_num_val - log_denom_val) * (weights)# + ln_prior_on_Rdisk * (weights)
 
     time_end = time.perf_counter()
 
