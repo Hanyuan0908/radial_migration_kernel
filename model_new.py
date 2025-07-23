@@ -183,6 +183,14 @@ def MH_evolution_Frankel20(age, Lbirth, MH_max = 0.7, gamma = 0.456, MH_grad = -
 
     return jnp.where(np.isnan(feh), -jnp.inf, feh)
 
+def MH_max_func(tau, MH_max, tau_s, alpha, beta, gamma):
+
+    x = (tau / tau_s) ** beta
+
+    val = MH_max - (x ** alpha + (1 + x) ** gamma - 1)
+
+    return val
+
 def MH_evolution_linear(Lbirth, MH_at_8, MH_grad):
     '''
     MH_at_8: array of Metallicity at 8 kpc for each star at the resepctive age
@@ -915,6 +923,77 @@ def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_g
 
     return logL
 
+@jax.jit
+def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_grad_0 = -2.66, tol = 5e-2):
+
+    time_start = time.perf_counter()
+
+    F_sample_num = data['F_sample_num']
+    F_sample_denom = data['F_sample_denom']
+    L0_sample = data['L0_sample']
+    age_sample = data['age_sample']
+    age_sample_0scatter = data['age_sample_noscatter']
+    L_sample = data['L_sample']
+    logP_L0 = data['logP_L0']
+    logP_F_denom = data['logP_F_denom']
+    weights = data['weights']
+
+    N_sample = L_sample.shape[0]
+    N_star = L_sample.shape[1]
+
+    ln_sigmaLz_knots = params['ln_sigmaLz']
+    ln_Rdisk_knots = params['ln_Rdisk']
+    MH_at_8_params = params['MH_at_8']
+    MH_at_8_params = jnp.exp(MH_at_8_params)
+    ln_MH_grad_knots = params['ln_MH_grad']
+
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[0].set(4) # today's metallicity at 8 kpc
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[-1].set(4.8)
+    ln_MH_grad_knots = ln_MH_grad_knots.at[0].set(ln_MH_grad_0) # today's gradient = -0.07
+    ln_MH_grad_knots = ln_MH_grad_knots.at[-1].set(-2) # today's gradient = -0.07
+
+
+    ln_Rdisk_func =  InterpolatedUnivariateSpline(aux_knots, ln_Rdisk_knots, k=3)
+    ln_sigmaLz_func = InterpolatedUnivariateSpline(aux_knots, ln_sigmaLz_knots, k=3)
+    ln_MH_grad_func =  InterpolatedUnivariateSpline(aux_knots, ln_MH_grad_knots, k=3)
+
+    Lcentre_sample = jnp.exp(ln_Rdisk_func(age_sample_0scatter)) * Vc0
+    sigmaLz_sample = jnp.exp(ln_sigmaLz_func(age_sample_0scatter)) * age_sample_0scatter
+    MH_at_8_sample = MH_max_func(age_sample, MH_at_8_0, MH_at_8_params[0], MH_at_8_params[1], MH_at_8_params[2], MH_at_8_params[3])
+    MH_grad_sample = -jnp.exp(ln_MH_grad_func(age_sample))
+
+    # jax.debug.print("sigmaLz_knots = {x}", x=jnp.exp(ln_sigmaLz_knots))
+    # jax.debug.print("sigmaLz_sample_max = {x}", x=jnp.max(sigmaLz_sample))
+
+    Lcentre_sample = jnp.where(Lcentre_sample<0.1*Vc0, 0.1*Vc0, Lcentre_sample)  # Ensure non-negative values
+    sigmaLz_sample = jnp.where(sigmaLz_sample<20, 20, sigmaLz_sample)  # Ensure non-negative values
+
+    #### numerator section ####
+
+    logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
+    logP_F_given_age_L0 = f_MH0_linearmodel_log(F_sample_num, L0_sample, MH_at_8_sample, MH_grad_sample, tol = tol)
+    logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
+
+    log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0
+    log_num_val = jsp.special.logsumexp(log_num, axis=0) - jnp.log(N_sample)
+
+    #### denominator section ####
+
+    logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
+    logP_F_given_age_L0 = f_MH0_linearmodel_log(F_sample_denom, L0_sample, MH_at_8_sample, MH_grad_sample, tol = tol)
+    logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
+
+    log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0 - logP_F_denom
+    log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
+
+    # ln_prior_on_Rdisk = jnp.sum(lnG(ln_Rdisk_knots, 0.5, 1.5))
+    logL = (log_num_val - log_denom_val) * (weights)# + ln_prior_on_Rdisk * (weights)
+
+    time_end = time.perf_counter()
+
+    # jax.debug.print("param = {y}, log_p = {x}, time = {z}", x=jnp.sum(logL), y=params, z = (time_end - time_start))
+
+    return logL
 
 def generate_sample_for_MC_integration(data, R_scale_for_sampling = 6, 
                                        F_centre_for_sampling = -0.3, 
