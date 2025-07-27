@@ -13,7 +13,6 @@ from functools import partial
 from tqdm import tqdm
 import time
 
-Vc0=240.
 
 def scalarize(x):
     return x if len(x) > 1 else x[0]
@@ -139,14 +138,14 @@ MH_center_interp = jsp.interpolate.RegularGridInterpolator((_age,), MH_center, f
 def Rb_calculator(age, MH):
     return (MH - MH_center_interp(age))/MH_grad_interp(age)
 
-def MH_evolution_Lu24(age, Lbirth):
+def MH_evolution_Lu24(age, Lbirth, Vc0 = 240.):
 
     Rbirth = Lbirth/Vc0
     feh = MH_center_interp(age) + MH_grad_interp(age)*Rbirth
 
     return jnp.where(jnp.isnan(feh), -jnp.inf, feh)
 
-def MH_evolution_Lu24_brokenlaw(age, Lbirth, grad_inner = -0.05, R_broken = 5):
+def MH_evolution_Lu24_brokenlaw(age, Lbirth, grad_inner = -0.05, R_broken = 5, Vc0 = 240.):
 
     Rbirth = Lbirth/Vc0
 
@@ -157,7 +156,7 @@ def MH_evolution_Lu24_brokenlaw(age, Lbirth, grad_inner = -0.05, R_broken = 5):
 
     return feh
 
-def MH_evolution_sharma21(age, Lbirth, Fmin = -0.85, FR = -0.08, RF = 6.5, tauF = 3.2, taumax = 13):
+def MH_evolution_sharma21(age, Lbirth, Fmin = -0.85, FR = -0.08, RF = 6.5, tauF = 3.2, taumax = 13, Vc0 = 240.):
 
     Rb = Lbirth/Vc0
 
@@ -168,7 +167,7 @@ def MH_evolution_sharma21(age, Lbirth, Fmin = -0.85, FR = -0.08, RF = 6.5, tauF 
 
     return val
 
-def MH_evolution_Frankel20(age, Lbirth, MH_max = 0.7, gamma = 0.456, MH_grad = -0.0936, MH_grad_inner = -0.03):
+def MH_evolution_Frankel20(age, Lbirth, MH_max = 0.7, gamma = 0.456, MH_grad = -0.0936, MH_grad_inner = -0.03, Vc0 = 240.):
 
     MH_max_time = MH_max * (1 - age/12)**gamma
 
@@ -183,15 +182,12 @@ def MH_evolution_Frankel20(age, Lbirth, MH_max = 0.7, gamma = 0.456, MH_grad = -
 
     return jnp.where(np.isnan(feh), -jnp.inf, feh)
 
-def MH_max_func(tau, MH_max, tau_s, alpha, beta, gamma):
+def MH_max_func(t, Z0, t_s, t_scale, m1, m2):
+    arg = (t - t_s) / t_scale
+    smooth_term = t_scale * jnp.log1p(jnp.exp(arg))
+    return Z0 - m1*t - (m2 - m1)*smooth_term
 
-    x = (tau / tau_s) ** beta
-
-    val = MH_max - (x ** alpha + (1 + x) ** gamma - 1)
-
-    return val
-
-def MH_evolution_linear(Lbirth, MH_at_8, MH_grad):
+def MH_evolution_linear(Lbirth, MH_at_8, MH_grad, Vc0 = 240.):
     '''
     MH_at_8: array of Metallicity at 8 kpc for each star at the resepctive age
     MH_grad: array of Metallicity gradient for each star at the respective age
@@ -200,6 +196,17 @@ def MH_evolution_linear(Lbirth, MH_at_8, MH_grad):
     feh = MH_at_8 + MH_grad * (Rbirth - 8)
 
     return jnp.where(jnp.isnan(feh), -jnp.inf, feh)
+
+def MH_evolution_linear_at0(Lbirth, MH_max, MH_grad, Vc0 = 240.):
+    '''
+    MH_max: array of Metallicity at 0 kpc for each star at the resepctive age
+    MH_grad: array of Metallicity gradient for each star at the respective age
+    '''
+    Rbirth = Lbirth/Vc0
+    feh = MH_max + MH_grad * (Rbirth)
+
+    return jnp.where(jnp.isnan(feh), -jnp.inf, feh)
+
 
 
 def sample_XexpX(xp, a, size):
@@ -252,6 +259,48 @@ def kernel_SB15_log(L, Lp, Lcenter, sigmaLz):
 
     return lnG(L, val1, sigmaLz) #-0.5 * val1**2 / sigmaLz**2 - 0.5 * jnp.log(2*jnp.pi*sigmaLz**2)
 
+def kernel_bardriven_mixing_log(L, Lp, Lcorot_birth, sigmaLz, Lcenter, Lcorot_today, res_width):
+    '''
+    Kernel that stars moving with the bar CR: if Lbirth is between Lres,0 & Lres, birth
+                                               otherwise stars migrate with SB15 kernel
+
+    L: Present-day AM
+    Lp: AM at birth
+    t: Present-day time
+    tp: Birth time
+    sigmaLz0: sigma_Lz
+    eta: Bar deceleration rate
+    res_width: half peakt-to-peak amplitude of the libration oscillation
+    Lcenter: Scale length x Vcirc
+    t_start: Start of the bar deceleration
+    t_stop: End of the bar deceleration
+    '''
+    L0t = Lcorot_today
+    L0tp = Lcorot_birth
+    val1 = Lp - sigmaLz**2/(2*Lcenter)
+    Lout = val1+(L0t-val1)*0.25*(1.+jnp.tanh((Lp-L0tp)/res_width))*(1.-jnp.tanh((Lp-L0t)/res_width))
+
+    sigma_Lout = sigmaLz+(res_width - sigmaLz)*0.25*(1.+jnp.tanh((Lp-L0tp)/res_width))*(1.-jnp.tanh((Lp-L0t)/res_width))
+
+    return lnG(L, Lout, sigma_Lout)#jnp.exp(-(L-Lout)**2/(2*sigma_Lout**2))/jnp.sqrt(2*jnp.pi*sigma_Lout**2)# * jnp.exp((Lp - L0tp)/(10*s))
+
+
+def kernel_combined_log(L, Lp, Rcorot_birth, sigmaLz, Lcenter, Rcorot_today, res_width, eps = 0.5, Vc0 = 240.):
+
+    '''
+    A kernel that combines the bar-driven and SB15 kernels with a weight eps
+    So that in the present-day CR region, eps stars migrated with the bar-driven kernel and (1-eps) stars migrated with the SB15 kernel
+    outside the CR region, stars migrated with the SB15 kernel only
+    '''
+
+    Lcorot_birth = Rcorot_birth * Vc0  # Convert to kpc km/s
+    Lcorot_today = Rcorot_today * Vc0  # Convert to k
+
+    kernel1 = kernel_bardriven_mixing_log(L, Lp, Lcorot_birth, sigmaLz, Lcenter, Lcorot_today, res_width) + jnp.log(eps)
+
+    kernel2 = kernel_SB15_log(L, Lp, Lcenter, sigmaLz) + jnp.log(1-eps)
+
+    return jnp.logaddexp(kernel1, kernel2)
 
 def f_MH0_log(MH, age, Lbirth, tol = 5e-2):
 
@@ -278,6 +327,19 @@ def f_MH0_linearmodel_log(MH, Lbirth, MH_at_8, MH_grad, tol = 5e-2):
     # MH_evolution_Lu24(age, Lbirth), MH_evolution_Frankel20, MH_evolution_sharma21
 
     MH_val = MH_evolution_linear(Lbirth, MH_at_8, MH_grad)
+
+    return lnG(MH, MH_val, tol)
+
+
+def f_MH0_linearmodel_at0_log(MH, Lbirth, MH_max, MH_grad, tol = 5e-2):
+
+    '''
+    f(MH|age, Lbirth) = delta(MH - MH_evolution_XXX(age, Lbirth))
+    '''
+
+    # MH_evolution_Lu24(age, Lbirth), MH_evolution_Frankel20, MH_evolution_sharma21
+
+    MH_val = MH_evolution_linear_at0(Lbirth, MH_max, MH_grad)
 
     return lnG(MH, MH_val, tol)
 
@@ -422,6 +484,9 @@ def ln_MH_grad_prior_uniform(params):
 
     return lnP
 
+
+
+
 smoothing_scale_wMH = {'ln_Rdisk':0.2, 'ln_sigmaLz':0.5, 'MH_at_8':0.2, 'ln_MH_grad':0.2}
 @jax.jit
 def smoothing_prior_withMHmodel(params):
@@ -429,6 +494,47 @@ def smoothing_prior_withMHmodel(params):
     if 'ln_Rdisk' in params:
         for i in smoothing_scale_wMH.keys():
             lnP += -jnp.sum(.5*(params[i][1:]-params[i][:-1])**2/(smoothing_scale_wMH[i])**2 + jnp.log(smoothing_scale_wMH[i]))
+
+    return lnP
+
+
+MH_max_param_normal_mean = [2., -0.7, -3.5, -2.5]
+MH_max_param_normal_std = [0.5, 0.5, 1, 1]
+MH_max_param_uniform_min = [0., -2, -5, -5]
+MH_max_param_uniform_max = [2.7, 1.5, -0.6, -0.6]
+@jax.jit
+def MH_max_param_prior_normal(params):
+    '''
+    Prior for the parameters
+    '''
+    lnP = 0.
+    lnP += lnG(params['MH_max'][0], MH_max_param_normal_mean[0], MH_max_param_normal_std[0]) # prior of t_s
+    lnP += lnG(params['MH_max'][1], MH_max_param_normal_mean[1], MH_max_param_normal_std[1]) # prior of t_scale
+    lnP += lnG(params['MH_max'][2], MH_max_param_normal_mean[2], MH_max_param_normal_std[2]) # prior of m1
+    lnP += lnG(params['MH_max'][3], MH_max_param_normal_mean[3], MH_max_param_normal_std[3]) # prior of m2
+
+    return lnP
+
+@jax.jit
+def MH_max_param_prior_uniform(params):
+    '''
+    Prior for the parameters
+    '''
+    lnP = 0.
+    lnP += jnp.where((params['MH_max'][0]>MH_max_param_uniform_min[0]) & (params['MH_max'][0]<MH_max_param_uniform_max[0]), 0, -jnp.inf) # prior of t_s
+    lnP += jnp.where((params['MH_max'][1]>MH_max_param_uniform_min[1]) & (params['MH_max'][1]<MH_max_param_uniform_max[1]), 0, -jnp.inf) # prior of t_scale
+    lnP += jnp.where((params['MH_max'][2]>MH_max_param_uniform_min[2]) & (params['MH_max'][2]<MH_max_param_uniform_max[2]), 0, -jnp.inf) # prior of m1
+    lnP += jnp.where((params['MH_max'][3]>MH_max_param_uniform_min[3]) & (params['MH_max'][3]<MH_max_param_uniform_max[3]), 0, -jnp.inf) # prior of m2
+
+    return lnP
+
+smoothing_scale_wMH2 = {'ln_Rdisk':0.2, 'ln_sigmaLz':0.5, 'ln_MH_grad':0.2}
+@jax.jit
+def smoothing_prior_withMHmodel2(params):
+    lnP=0.
+    if 'ln_Rdisk' in params:
+        for i in smoothing_scale_wMH2.keys():
+            lnP += -jnp.sum(.5*(params[i][1:]-params[i][:-1])**2/(smoothing_scale_wMH2[i])**2 + jnp.log(smoothing_scale_wMH2[i]))
 
     return lnP
 
@@ -503,7 +609,7 @@ def smoothing_prior_withMHmodel(params):
 
 
 @jax.jit
-def logL_numpyro(data, params, aux_knots):
+def logL_numpyro(data, params, aux_knots, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -572,7 +678,7 @@ def logL_numpyro(data, params, aux_knots):
     return logL
 
 @jax.jit
-def logL_numpyro2(data, params, aux_knots):
+def logL_numpyro2(data, params, aux_knots, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -641,7 +747,7 @@ def logL_numpyro2(data, params, aux_knots):
     return logL
 
 @jax.jit
-def logL_numpyro3(data, params, aux_knots):
+def logL_numpyro3(data, params, aux_knots, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -714,7 +820,7 @@ def logL_numpyro3(data, params, aux_knots):
     return logL
 
 @jax.jit
-def logL_numpyro3(data, params, aux_knots):
+def logL_numpyro3(data, params, aux_knots, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -787,8 +893,12 @@ def logL_numpyro3(data, params, aux_knots):
     return logL
 
 
+'''
+This one works the best!!!
+'''
+
 @jax.jit
-def logL_numpyro4(data, params, aux_knots, tol = 5e-2):
+def logL_numpyro4(data, params, aux_knots, tol = 5e-2, Vc0 = 240.): # 
 
     time_start = time.perf_counter()
 
@@ -851,7 +961,7 @@ def logL_numpyro4(data, params, aux_knots, tol = 5e-2):
 
 
 @jax.jit
-def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_grad_0 = -2.66, tol = 5e-2):
+def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_grad_0 = -2.66, tol = 5e-2, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -924,7 +1034,7 @@ def logL_numpyro_withMHmodel(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_g
     return logL
 
 @jax.jit
-def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_grad_0 = -2.66, tol = 5e-2):
+def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_0_0 = 0.64, ln_MH_grad_0 = -2.66, tol = 5e-2, Vc0 = 240.):
 
     time_start = time.perf_counter()
 
@@ -943,7 +1053,7 @@ def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_
 
     ln_sigmaLz_knots = params['ln_sigmaLz']
     ln_Rdisk_knots = params['ln_Rdisk']
-    MH_at_8_params = params['MH_at_8']
+    MH_at_8_params = params['MH_max']
     MH_at_8_params = jnp.exp(MH_at_8_params)
     ln_MH_grad_knots = params['ln_MH_grad']
 
@@ -959,7 +1069,7 @@ def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_
 
     Lcentre_sample = jnp.exp(ln_Rdisk_func(age_sample_0scatter)) * Vc0
     sigmaLz_sample = jnp.exp(ln_sigmaLz_func(age_sample_0scatter)) * age_sample_0scatter
-    MH_at_8_sample = MH_max_func(age_sample, MH_at_8_0, MH_at_8_params[0], MH_at_8_params[1], MH_at_8_params[2], MH_at_8_params[3])
+    MH_max_sample = MH_max_func(age_sample, MH_at_0_0, MH_at_8_params[0], MH_at_8_params[1], MH_at_8_params[2], MH_at_8_params[3])
     MH_grad_sample = -jnp.exp(ln_MH_grad_func(age_sample))
 
     # jax.debug.print("sigmaLz_knots = {x}", x=jnp.exp(ln_sigmaLz_knots))
@@ -971,7 +1081,7 @@ def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_
     #### numerator section ####
 
     logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
-    logP_F_given_age_L0 = f_MH0_linearmodel_log(F_sample_num, L0_sample, MH_at_8_sample, MH_grad_sample, tol = tol)
+    logP_F_given_age_L0 = f_MH0_linearmodel_at0_log(F_sample_num, L0_sample, MH_max_sample, MH_grad_sample, tol = tol)
     logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
 
     log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0
@@ -980,7 +1090,7 @@ def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_
     #### denominator section ####
 
     logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
-    logP_F_given_age_L0 = f_MH0_linearmodel_log(F_sample_denom, L0_sample, MH_at_8_sample, MH_grad_sample, tol = tol)
+    logP_F_given_age_L0 = f_MH0_linearmodel_at0_log(F_sample_denom, L0_sample, MH_max_sample, MH_grad_sample, tol = tol)
     logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
 
     log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0 - logP_F_denom
@@ -995,10 +1105,77 @@ def logL_numpyro_withMHmodel2(data, params, aux_knots, MH_at_8_0 = 0.064, ln_MH_
 
     return logL
 
+@jax.jit
+def logL_numpyro_withMHmodel3(data, params, aux_knots, ln_MH_grad_0 = -2.66, tol = 5e-2, Vc0 = 240.):
+
+    F_sample_num = data['F_sample_num']
+    F_sample_denom = data['F_sample_denom']
+    L0_sample = data['L0_sample']
+    age_sample = data['age_sample']
+    age_sample_0scatter = data['age_sample_noscatter']
+    L_sample = data['L_sample']
+    logP_L0 = data['logP_L0']
+    logP_F_denom = data['logP_F_denom']
+    weights = data['weights']
+    MH_max_sample = data['MH_max_sample']
+
+    N_sample = L_sample.shape[0]
+    N_star = L_sample.shape[1]
+
+    ln_sigmaLz_knots = params['ln_sigmaLz']
+    ln_Rdisk_knots = params['ln_Rdisk']
+    ln_MH_grad_knots = params['ln_MH_grad']
+
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[0].set(4) # today's metallicity at 8 kpc
+    ln_sigmaLz_knots = ln_sigmaLz_knots.at[-1].set(4.8)
+    ln_MH_grad_knots = ln_MH_grad_knots.at[0].set(ln_MH_grad_0) # today's gradient = -0.07
+    ln_MH_grad_knots = ln_MH_grad_knots.at[-1].set(-2) # today's gradient = -0.07
+
+
+    ln_Rdisk_func =  InterpolatedUnivariateSpline(aux_knots, ln_Rdisk_knots, k=3)
+    ln_sigmaLz_func = InterpolatedUnivariateSpline(aux_knots, ln_sigmaLz_knots, k=3)
+    ln_MH_grad_func =  InterpolatedUnivariateSpline(aux_knots, ln_MH_grad_knots, k=3)
+
+    Lcentre_sample = jnp.exp(ln_Rdisk_func(age_sample_0scatter)) * Vc0
+    sigmaLz_sample = jnp.exp(ln_sigmaLz_func(age_sample_0scatter)) * age_sample_0scatter
+    MH_grad_sample = -jnp.exp(ln_MH_grad_func(age_sample))
+
+    # jax.debug.print("sigmaLz_knots = {x}", x=jnp.exp(ln_sigmaLz_knots))
+    # jax.debug.print("sigmaLz_sample_max = {x}", x=jnp.max(sigmaLz_sample))
+
+    Lcentre_sample = jnp.where(Lcentre_sample<0.1*Vc0, 0.1*Vc0, Lcentre_sample)  # Ensure non-negative values
+    sigmaLz_sample = jnp.where(sigmaLz_sample<20, 20, sigmaLz_sample)  # Ensure non-negative values
+
+    #### numerator section ####
+
+    logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
+    logP_F_given_age_L0 = f_MH0_linearmodel_at0_log(F_sample_num, L0_sample, MH_max_sample, MH_grad_sample, tol = tol)
+    logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
+
+    log_num = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0
+    log_num_val = jsp.special.logsumexp(log_num, axis=0) - jnp.log(N_sample)
+
+    #### denominator section ####
+
+    logP_L_given_age_L0 = kernel_SB15_log(L_sample, L0_sample, Lcentre_sample, sigmaLz_sample)
+    logP_F_given_age_L0 = f_MH0_linearmodel_at0_log(F_sample_denom, L0_sample, MH_max_sample, MH_grad_sample, tol = tol)
+    logP_L0_given_age = fL0_log(L0_sample, Lcentre_sample)
+
+    log_denom = logP_L_given_age_L0 + logP_F_given_age_L0 + logP_L0_given_age - logP_L0 - logP_F_denom
+    log_denom_val = jsp.special.logsumexp(log_denom, axis=0) - jnp.log(N_sample)
+
+    # ln_prior_on_Rdisk = jnp.sum(lnG(ln_Rdisk_knots, 0.5, 1.5))
+    logL = (log_num_val - log_denom_val) * (weights)# + ln_prior_on_Rdisk * (weights)
+
+    # jax.debug.print("param = {y}, log_p = {x}, time = {z}", x=jnp.sum(logL), y=params, z = (time_end - time_start))
+
+    return logL
+
+
 def generate_sample_for_MC_integration(data, R_scale_for_sampling = 6, 
                                        F_centre_for_sampling = -0.3, 
                                        F_scale_for_sampling = 1, 
-                                       N_sample = int(1e4)):
+                                       N_sample = int(1e4), Vc0 = 240.):
 
     Vc0 = 240.
     Z = data['MH']
@@ -1061,7 +1238,7 @@ def generate_sample_for_MC_integration(data, R_scale_for_sampling = 6,
 def generate_sample_for_MC_integration_withprob(data, R_scale_for_sampling = 4, 
                                     F_centre_at_0 = 0., F_centre_at_12 = -0.8,
                                     F_scale_at_0= 0.2, F_scale_at_12= 0.8,
-                                    N_sample = int(1e3)):
+                                    N_sample = int(1e3), Vc0 = 240.):
 
     Vc0 = 240.
     Z = data['MH']
@@ -1137,7 +1314,7 @@ def generate_sample_for_MC_integration_withprob_samenumdenom(data,
                                     F_centre_at_0 = 0., F_centre_at_12 = -0.8,
                                     F_scale_at_0= 0.2, F_scale_at_12= 0.8,
                                     R_scale_at_0 = 3, R_scale_at_12 = 1, 
-                                    N_sample = int(1e3)):
+                                    N_sample = int(1e3), Vc0 = 240.):
 
     Vc0 = 240.
     Z = data['MH']
@@ -1314,6 +1491,19 @@ def f_MH0_log_for_sampling(MH, age, Lbirth, tol = 5e-2):
 
     return lnG(MH, MH_val, tol)
 
+def f_MH0_log_withMHmodel_for_sampling(MH, age, Lbirth, tol = 5e-2):
+
+    '''
+    f(MH|age, Lbirth) = delta(MH - MH_evolution_XXX(age, Lbirth))
+    '''
+
+    # MH_evolution_Lu24(age, Lbirth), MH_evolution_Frankel20, MH_evolution_sharma21
+    # age = age.reshape(-1)
+    Lbirth = Lbirth.reshape(-1)
+    MH_val = MH_evolution_Lu24(age, Lbirth)
+
+    return lnG(MH, MH_val, tol)
+
 def log_trapzoid_integrate(lny, dx):
     """
     Compute the logarithm of the trapezoidal integral of f over x with spacing dx.
@@ -1326,7 +1516,7 @@ def log_trapzoid_integrate(lny, dx):
 
 
 @jax.jit
-def logP_F_L_given_tau(MH, L, tau, sigmaLz, Lcentre, tol = 5e-2):
+def logP_F_L_given_tau(MH, L, tau, sigmaLz, Lcentre, tol = 5e-2, Vc0 = 240.):
 
     L0grid = jnp.linspace(0,50*Vc0,1000)
 
@@ -1340,6 +1530,49 @@ def logP_F_L_given_tau(MH, L, tau, sigmaLz, Lcentre, tol = 5e-2):
 
     return lnP_total
 logP_F_L_given_tau_vmap = jax.vmap(logP_F_L_given_tau, in_axes=(0, None, None, None, None))
+
+
+@jax.jit
+def logP_F_L_given_tau_withMHgrad(MH, L, MH_max, MH_grad, sigmaLz, Lcentre, tol = 5e-2, Vc0 = 240.):
+
+    L0grid = jnp.linspace(0,50*Vc0,1000)
+
+    lnP1 = fL0_log(L0grid, Lcentre)
+    lnP2 = f_MH0_linearmodel_at0_log(MH, L0grid, MH_max, MH_grad, tol = tol)
+    lnP3 = kernel_SB15_log(L, L0grid, Lcentre, sigmaLz)
+
+    # print('lnP1', lnP1, 'lnP2', lnP2, 'lnP3', lnP3)
+    lnP_all = lnP1 + lnP2 + lnP3
+    lnP_total = log_trapzoid_integrate(lnP_all, dx=L0grid[1] - L0grid[0])
+
+    return lnP_total
+logP_F_L_given_tau_withMHgrad_vmap = jax.vmap(logP_F_L_given_tau_withMHgrad, in_axes=(0, None, None, None, None, None))
+
+
+@jax.jit
+def logP_F_L_given_tau_withMHgrad_withbar(MH, L, 
+                                          MH_max, MH_grad, 
+                                          sigmaLz, Lcentre, 
+                                          Rcorot_birth, Rcorot_today, 
+                                          res_width, eps, tol, Vc0):
+
+    L0grid = jnp.linspace(0,50*Vc0,1000)
+
+    lnP1 = fL0_log(L0grid, Lcentre)
+    lnP2 = f_MH0_linearmodel_at0_log(MH, L0grid, MH_max, MH_grad, tol = tol)
+    lnP3 = kernel_combined_log(L, L0grid, Rcorot_birth, sigmaLz, Lcentre, Rcorot_today, res_width, eps, Vc0)
+    # lnP3 = kernel_bardriven_mixing_log(L, L0grid, Rcorot_birth * Vc0, sigmaLz, Lcentre, Rcorot_today * Vc0, res_width)
+
+    # print('lnP1', lnP1, 'lnP2', lnP2, 'lnP3', lnP3)
+    lnP_all = lnP1 + lnP2 + lnP3
+    lnP_total = log_trapzoid_integrate(lnP_all, dx=L0grid[1] - L0grid[0])
+
+    return lnP_total
+logP_F_L_given_tau_withMHgrad_withbar_vmap = jax.vmap(logP_F_L_given_tau_withMHgrad_withbar, 
+                                                    in_axes=(0, None, None, None, None, None, None, None, None, None, None, None))
+
+
+
 
 @partial(jax.jit,static_argnums=(2))
 def sample_from_logP(x_grid, logP, N, key):
@@ -1363,3 +1596,127 @@ def sample_from_logP(x_grid, logP, N, key):
     u = jax.random.uniform(key, shape=(N,))
     samples = jnp.interp(u, cdf, x_grid)
     return samples
+
+
+'''
+Binning strategy
+'''
+
+def binning_with_median(df_mockdata,
+                        Vc0=240,
+                        feh_range = [-1.5,0.5],
+                        logage_range = np.log10([0.3,12]),
+                        Rg_range = [9,11]):
+    F, logage, L = df_mockdata['MH'], df_mockdata['log_age'], df_mockdata['Lz']
+    sigma_F, sigma_logage, sigma_L = df_mockdata['sigma_MH'], df_mockdata['sigma_logage'], df_mockdata['sigma_Lz']
+
+    e_feh_median = np.amax([np.median(sigma_F), 0.02])
+    e_log10age_median = np.amax([np.median(sigma_logage), 0.02])
+    e_Lz_median = np.amax([np.median(sigma_L), 20])
+    print('Median errors: e_feh_median = ', e_feh_median,
+        'e_log10age_median = ', e_log10age_median,
+        'e_Lz_median = ', e_Lz_median)
+
+    L_range = [Rg_range[0]*Vc0,Rg_range[1]*Vc0]
+    nfe = int((feh_range[1] - feh_range[0]) / e_feh_median)
+    nlogage = int((logage_range[1] - logage_range[0]) / e_log10age_median)
+    nL = int((L_range[1] - L_range[0]) / e_Lz_median)
+    print('Fe/H bins: ', nfe, 'bin size: ', (feh_range[1] - feh_range[0]) / nfe)
+    print('log10(age) bins: ', nlogage, 'bin size: ', (logage_range[1] - logage_range[0]) / nlogage)
+    print('Lz bins: ', nL, 'bin size: ', (L_range[1] - L_range[0]) / nL)
+
+    data_array = np.array([F, logage, L]).T
+    H, edges = np.histogramdd(data_array, bins=(nfe, nlogage, nL), range=[feh_range, logage_range, L_range])
+    print('H shape: ', H.shape, 'Total stars: ', H.sum(), 'Number of bins with H>1', (H>=1).sum())
+    # print(edges)
+    centers = [
+        0.5*(edges[d][:-1] + edges[d][1:]) 
+        for d in range(3)
+    ]
+
+    ix, iy, iz = np.nonzero(H)  # each is a 1D array of the same length M
+
+    fe_centers     = centers[0][ix]
+    logage_centers = centers[1][iy]
+    L_centers      = centers[2][iz]
+    Nstars = H[ix, iy, iz]
+
+    data_grid = {
+        'MH': jnp.array(fe_centers),
+        'log_age': jnp.array(logage_centers),
+        'Lz': jnp.array(L_centers),
+        'sigma_MH': jnp.array([e_feh_median] * len(fe_centers)),
+        'sigma_logage': jnp.array([e_log10age_median] * len(logage_centers)),
+        'sigma_Lz': jnp.array([e_Lz_median] * len(L_centers)),
+        'Nstars': jnp.array(Nstars),
+    }
+    return data_grid
+
+
+def binning_with_different_sigma(data, 
+                                MH_sigma_level = [0, 0.02, 0.05, 0.1], 
+                                logage_sigma_level = [0, 0.02, 0.04, 0.1],
+                                feh_range = [-1.5,0.5],
+                                logage_range = np.log10([0.3,12]),
+                                Rg_range = [9,11], Vc0 = 240.):
+    # Bin the data based on the specified sigma levels
+
+    F_centre_ls = np.zeros(0)
+    logage_centre_ls = np.zeros(0)
+    L_centre_ls = np.zeros(0)
+    Nstars_ls = np.zeros(0)
+    sigma_F_ls = np.zeros(0)
+    sigma_logage_ls = np.zeros(0)
+    sigma_Lz_ls = np.zeros(0)
+
+    for i in range(len(MH_sigma_level)-1):
+        for j in range(len(logage_sigma_level)-1):
+            df_mockdata1 = data[(data['sigma_MH'] <= MH_sigma_level[i+1]) & (data['sigma_logage'] <= logage_sigma_level[j+1])]
+            df_mockdata1 = df_mockdata1[(df_mockdata1['sigma_MH'] > MH_sigma_level[i]) & (df_mockdata1['sigma_logage'] > logage_sigma_level[j])]
+
+            if len(df_mockdata1)>0:
+                F, logage, L = df_mockdata1['MH'].to_numpy(), df_mockdata1['log_age'].to_numpy(), df_mockdata1['Lz'].to_numpy()
+                sigma_F, sigma_logage, sigma_L = df_mockdata1['sigma_MH'].to_numpy(), df_mockdata1['sigma_logage'].to_numpy(), df_mockdata1['sigma_Lz'].to_numpy()
+
+                e_feh_median = jnp.amax(sigma_F)
+                e_log10age_median = jnp.amax(sigma_logage)
+                e_Lz_median = np.amax([np.nanmedian(sigma_L), 20])
+
+                L_range = [Rg_range[0] * Vc0, Rg_range[1] * Vc0]  # Convert to Lz range
+                nfe = int((feh_range[1] - feh_range[0]) / e_feh_median)
+                nlogage = int((logage_range[1] - logage_range[0]) / e_log10age_median)
+                nL = int((L_range[1] - L_range[0]) / e_Lz_median)
+
+                data_array = np.array([F, logage, L]).T
+                H, edges = np.histogramdd(data_array, bins=(nfe, nlogage, nL), range=[feh_range, logage_range, L_range])
+
+                centers = [
+                    0.5*(edges[d][:-1] + edges[d][1:]) 
+                    for d in range(3)
+                ]
+
+                ix, iy, iz = np.nonzero(H)  # each is a 1D array of the same length M
+
+                fe_centers     = centers[0][ix]
+                logage_centers = centers[1][iy]
+                L_centers      = centers[2][iz]
+                Nstars = H[ix, iy, iz]
+
+                F_centre_ls = np.append(fe_centers, F_centre_ls)
+                logage_centre_ls = np.append(logage_centers, logage_centre_ls)
+                L_centre_ls = np.append(L_centers, L_centre_ls)
+                Nstars_ls = np.append(Nstars, Nstars_ls)
+                sigma_F_ls = np.append(e_feh_median * np.ones_like(fe_centers), sigma_F_ls)
+                sigma_logage_ls = np.append(e_log10age_median * np.ones_like(logage_centers), sigma_logage_ls)
+                sigma_Lz_ls = np.append(e_Lz_median * np.ones_like(L_centers), sigma_Lz_ls)
+    binned_data = {
+        'MH': F_centre_ls,
+        'log_age': logage_centre_ls,
+        'Lz': L_centre_ls,
+        'N_stars': Nstars_ls,
+        'sigma_MH': sigma_F_ls,
+        'sigma_logage': sigma_logage_ls,
+        'sigma_Lz': sigma_Lz_ls,
+        'Nstars': Nstars_ls,
+    }
+    return binned_data
