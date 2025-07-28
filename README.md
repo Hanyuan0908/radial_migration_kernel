@@ -1,5 +1,7 @@
 # radial_migration_kernel
 
+The required packages: numpy, scipy, pandas, jax, jax_cosmo, matplotlib, tqdm, corner, pickle, numpyro 
+
 Key scripts:
 
 1. model_new.py contains all the source functions, including the data preprocessing, the loglikelihood function, and all its required ingredients.
